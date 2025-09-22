@@ -15,7 +15,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/apple/sourcekit-lsp",
-            revision: "6022af05e92b1fb9e3e17a09753d6434d8f0dc9b"
+            revision: "1aae2a4c329035163db85d64ae7bc81ee80aaa3c"
         ),
         .package(
             url: "https://github.com/apple/swift-protobuf.git",
@@ -31,6 +31,9 @@ let package = Package(
                     name: "ArgumentParser",
                     package: "swift-argument-parser"
                 ),
+            ],
+            exclude: [
+                "BUILD",
             ]
         ),
         .target(
@@ -45,11 +48,20 @@ let package = Package(
                     name: "LSPBindings",
                     package: "sourcekit-lsp"
                 ),
+                .product(
+                    name: "ArgumentParser",
+                    package: "swift-argument-parser"
+                )
             ],
+            exclude: [
+                "BUILD",
+            ]
         ),
         .testTarget(
             name: "SourceKitBazelBSPTests",
-            dependencies: ["SourceKitBazelBSP"],
+            dependencies: [
+                "SourceKitBazelBSP",
+            ],
             resources: [
                 .copy("Resources/aquery.pb"),
                 .copy("Resources/aquery_objc.pb"),
@@ -62,6 +74,7 @@ let package = Package(
                 .product(name: "SwiftProtobuf", package: "swift-protobuf")
             ],
             exclude: [
+                "BUILD",
                 "README.md",
                 "protos/analysis_v2.proto",
                 "protos/build.proto",

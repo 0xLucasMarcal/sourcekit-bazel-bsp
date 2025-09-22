@@ -17,8 +17,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+import ArgumentParser
+
 // The list of **top-level rules** we know how to process in the BSP.
-public enum TopLevelRuleType: String, CaseIterable {
+public enum TopLevelRuleType: String, CaseIterable, ExpressibleByArgument {
     case iosApplication = "ios_application"
     case iosUnitTest = "ios_unit_test"
     case iosUiTest = "ios_ui_test"
@@ -26,6 +28,7 @@ public enum TopLevelRuleType: String, CaseIterable {
     case watchosUnitTest = "watchos_unit_test"
     case watchosUiTest = "watchos_ui_test"
     case macosApplication = "macos_application"
+    case macosCommandLineApplication = "macos_command_line_application"
     case macosUnitTest = "macos_unit_test"
     case macosUiTest = "macos_ui_test"
     case tvosApplication = "tvos_application"
@@ -44,6 +47,7 @@ public enum TopLevelRuleType: String, CaseIterable {
         case .watchosUnitTest: return "watchos"
         case .watchosUiTest: return "watchos"
         case .macosApplication: return "macos"
+        case .macosCommandLineApplication: return "macos"
         case .macosUnitTest: return "macos"
         case .macosUiTest: return "macos"
         case .tvosApplication: return "tvos"
@@ -66,6 +70,7 @@ public enum TopLevelRuleType: String, CaseIterable {
         case .watchosUnitTest: return "watchsimulator"
         case .watchosUiTest: return "watchsimulator"
         case .macosApplication: return "macosx"
+        case .macosCommandLineApplication: return "macosx"
         case .macosUnitTest: return "macosx"
         case .macosUiTest: return "macosx"
         case .tvosApplication: return "appletvsimulator"

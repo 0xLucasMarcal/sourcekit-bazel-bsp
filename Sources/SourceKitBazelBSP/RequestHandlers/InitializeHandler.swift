@@ -21,7 +21,7 @@ import BuildServerProtocol
 import Foundation
 import LanguageServerProtocol
 
-package let sourcekitBazelBSPVersion = "0.0.5"
+package let sourcekitBazelBSPVersion = "0.1.1"
 private let logger = makeFileLevelBSPLogger()
 
 enum InitializeHandlerError: Error, LocalizedError {
@@ -58,10 +58,10 @@ final class InitializeHandler {
 
     func initializeBuild(
         _ request: InitializeBuildRequest,
-        _ id: RequestID
+        _ id: RequestID,
     ) throws -> (InitializeBuildResponse, InitializedServerConfig) {
         let taskId = TaskId(id: "initializeBuild-\(id.description)")
-        connection?.startWorkTask(id: taskId, title: "Indexing: Initializing sourcekit-bazel-bsp")
+        connection?.startWorkTask(id: taskId, title: "sourcekit-bazel-bsp: Initializing...")
         do {
             let initializedConfig = try makeInitializedConfig(fromRequest: request, baseConfig: baseConfig)
             let result = buildResponse(fromRequest: request, and: initializedConfig)
@@ -100,12 +100,23 @@ final class InitializeHandler {
         )
         logger.debug("outputPath: \(outputPath)")
 
+        // Get the execution root based on the above output base.
+        let executionRoot: String = try commandRunner.bazelIndexAction(
+            baseConfig: baseConfig,
+            outputBase: outputBase,
+            cmd: "info execution_root",
+            rootUri: rootUri
+        )
+        logger.debug("executionRoot: \(executionRoot)")
+
         // Collecting the rest of the env's details
         let devDir: String = try commandRunner.run("xcode-select --print-path")
         let toolchain = try getToolchainPath(with: commandRunner)
+        let sdkRootPaths: [String: String] = getSDKRootPaths(with: commandRunner)
 
         logger.debug("devDir: \(devDir)")
         logger.debug("toolchain: \(toolchain)")
+        logger.debug("sdkRootPaths: \(sdkRootPaths)")
 
         return InitializedServerConfig(
             baseConfig: baseConfig,
@@ -113,7 +124,9 @@ final class InitializeHandler {
             outputBase: outputBase,
             outputPath: outputPath,
             devDir: devDir,
-            devToolchainPath: toolchain
+            devToolchainPath: toolchain,
+            executionRoot: executionRoot,
+            sdkRootPaths: sdkRootPaths
         )
     }
 
@@ -128,6 +141,18 @@ final class InitializeHandler {
         }
         let toolchain = swiftPath.dropLast(expectedSwiftPathSuffix.count)
         return String(toolchain)
+    }
+
+    func getSDKRootPaths(with commandRunner: CommandRunner) -> [String: String] {
+        let supportedSDKTypes = Set(TopLevelRuleType.allCases.map { $0.sdkName }).sorted()
+        let sdkRootPaths: [String: String] = supportedSDKTypes.reduce(into: [:]) { result, sdkType in
+            // This will fail if the user doesn't have the SDK installed, which is fine.
+            guard let sdkRootPath: String? = try? commandRunner.run("xcrun --sdk \(sdkType) --show-sdk-path") else {
+                return
+            }
+            result[sdkType] = sdkRootPath
+        }
+        return sdkRootPaths
     }
 
     func buildResponse(

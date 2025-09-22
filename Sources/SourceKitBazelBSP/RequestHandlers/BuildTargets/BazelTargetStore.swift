@@ -22,17 +22,26 @@ import BuildServerProtocol
 import Foundation
 import LanguageServerProtocol
 
+import struct os.OSAllocatedUnfairLock
+
 private let logger = makeFileLevelBSPLogger()
 
 // Represents a type that can query, processes, and store
 // the project's dependency graph and its files.
 protocol BazelTargetStore: AnyObject {
+    var stateLock: OSAllocatedUnfairLock<Void> { get }
+    var platformsToTopLevelLabelsMap: [String: [String]] { get }
     func fetchTargets() throws -> [BuildTarget]
     func bazelTargetLabel(forBSPURI uri: URI) throws -> String
     func bazelTargetSrcs(forBSPURI uri: URI) throws -> [URI]
     func bspURIs(containingSrc src: URI) throws -> [URI]
-    func platformBuildLabel(forBSPURI uri: URI) throws -> (String, TopLevelRuleType)
+    func platformBuildLabelInfo(forBSPURI uri: URI) throws -> BazelTargetPlatformInfo
     func clearCache()
+}
+
+struct BazelTargetPlatformInfo {
+    let buildTestLabel: String
+    let parentRuleType: TopLevelRuleType
 }
 
 enum BazelTargetStoreError: Error, LocalizedError {
@@ -55,6 +64,11 @@ final class BazelTargetStoreImpl: BazelTargetStore {
     // The list of kinds we currently care about and can query for.
     static let supportedKinds: Set<String> = ["source file", "swift_library", "objc_library"]
 
+    // Users of BazelTargetStore are expected to acquire this lock before reading or writing any of the internal state.
+    // This is to prevent race conditions between concurrent requests. It's easier to have each request handle critical sections
+    // on their own instead of trying to solve it entirely within this class.
+    let stateLock = OSAllocatedUnfairLock()
+
     private let initializedConfig: InitializedServerConfig
     private let bazelTargetQuerier: BazelTargetQuerier
 
@@ -64,11 +78,15 @@ final class BazelTargetStoreImpl: BazelTargetStore {
     private var availableBazelLabels: Set<String> = []
     private var bazelLabelToParentsMap: [String: [String]] = [:]
     private var topLevelLabelToRuleMap: [String: TopLevelRuleType] = [:]
+    private var cachedTargets: [BuildTarget]? = nil
 
     init(initializedConfig: InitializedServerConfig, bazelTargetQuerier: BazelTargetQuerier = BazelTargetQuerier()) {
         self.initializedConfig = initializedConfig
         self.bazelTargetQuerier = bazelTargetQuerier
     }
+
+    /// Maps the list of supported platforms to the list of top-level labels of said platform.
+    var platformsToTopLevelLabelsMap: [String: [String]] = [:]
 
     /// Converts a BSP BuildTarget URI to its underlying Bazel target label.
     func bazelTargetLabel(forBSPURI uri: URI) throws -> String {
@@ -112,7 +130,7 @@ final class BazelTargetStoreImpl: BazelTargetStore {
 
     /// Provides the bazel label containing **platform information** for a given BSP URI.
     /// This is used to determine the correct set of compiler flags for the target / platform combo.
-    func platformBuildLabel(forBSPURI uri: URI) throws -> (String, TopLevelRuleType) {
+    func platformBuildLabelInfo(forBSPURI uri: URI) throws -> BazelTargetPlatformInfo {
         let bazelLabel = try bazelTargetLabel(forBSPURI: uri)
         let parents = try bazelLabelToParents(forBazelLabel: bazelLabel)
         // FIXME: When a target can compile to multiple platforms, the way Xcode handles it is by selecting
@@ -120,14 +138,22 @@ final class BazelTargetStoreImpl: BazelTargetStore {
         // at the moment, so for now we just select the first parent.
         let parentToUse = parents[0]
         let rule = try topLevelRuleType(forBazelLabel: parentToUse)
-        return (
-            "\(bazelLabel)_\(rule.platform)\(initializedConfig.baseConfig.buildTestSuffix)",
-            rule
+        let baseSuffix = initializedConfig.baseConfig.buildTestSuffix
+        let platformPlaceholder = initializedConfig.baseConfig.buildTestPlatformPlaceholder
+        let platformBuildSuffix = baseSuffix.replacingOccurrences(of: platformPlaceholder, with: rule.platform)
+        return BazelTargetPlatformInfo(
+            buildTestLabel: "\(bazelLabel)\(platformBuildSuffix)",
+            parentRuleType: rule,
         )
     }
 
     @discardableResult
     func fetchTargets() throws -> [BuildTarget] {
+        // This request needs caching because it gets called after file changes,
+        // even if nothing was invalidated.
+        if let cachedTargets = cachedTargets {
+            return cachedTargets
+        }
 
         // Start by determining which platforms each top-level app is for.
         // This will allow us to later determine which sets of flags to provide
@@ -138,11 +164,15 @@ final class BazelTargetStoreImpl: BazelTargetStore {
             forConfig: initializedConfig.baseConfig,
             rootUri: initializedConfig.rootUri,
         )
+        let topLevelTargets = topLevelTargetData.map { $0.0 }
 
         logger.debug("Queried top-level target data: \(topLevelTargetData)")
 
+        // Parse the target dependencies for the top-level targets.
+        // This doesn't include information about which top-level app a target belongs to,
+        // but we'll fill that in below.
         let targets: [BlazeQuery_Target] = try bazelTargetQuerier.queryTargetDependencies(
-            forTargets: topLevelTargetData.map { $0.0 },
+            forTargets: topLevelTargets,
             forConfig: initializedConfig.baseConfig,
             rootUri: initializedConfig.rootUri,
             kinds: Self.supportedKinds
@@ -170,17 +200,29 @@ final class BazelTargetStoreImpl: BazelTargetStore {
         }
         for (target, ruleType) in topLevelTargetData {
             topLevelLabelToRuleMap[target] = ruleType
+            platformsToTopLevelLabelsMap[ruleType.platform, default: []].append(target)
         }
 
         // We need to now map which targets belong to which top-level apps,
         // to further support the target / platform combo differentiation mentioned above.
-        for (topLevelTarget, _) in topLevelTargetData {
-            let deps = try bazelTargetQuerier.queryDependencyLabels(
-                ofTarget: topLevelTarget,
-                forConfig: initializedConfig.baseConfig,
-                rootUri: initializedConfig.rootUri,
-                kinds: Self.supportedKinds
-            )
+
+        // We need to include the top-level data here as well to be able to traverse the graph correctly.
+        let depGraphKinds = Self.supportedKinds.union(TopLevelRuleType.allCases.map { $0.rawValue })
+
+        let depGraph = try bazelTargetQuerier.queryDependencyGraph(
+            ofTargets: topLevelTargets,
+            forConfig: initializedConfig.baseConfig,
+            rootUri: initializedConfig.rootUri,
+            kinds: depGraphKinds
+        )
+
+        // We should ignore any app -> app nodes as we don't want to follow things such
+        // as the watchos_application field in ios_application rules. Otherwise some targets
+        // will be misclassified.
+        let targetsToIgnore = Set(topLevelTargets)
+
+        for topLevelTarget in topLevelTargets {
+            let deps = traverseGraph(from: topLevelTarget, in: depGraph, ignoring: targetsToIgnore)
             for dep in deps {
                 guard availableBazelLabels.contains(dep) else {
                     // Ignore any labels that we also ignored above
@@ -190,7 +232,29 @@ final class BazelTargetStoreImpl: BazelTargetStore {
             }
         }
 
-        return targetData.map { $0.0 }
+        let result = targetData.map { $0.0 }
+        cachedTargets = result
+        return result
+    }
+
+    private func traverseGraph(from target: String, in graph: [String: [String]], ignoring: Set<String>) -> Set<String>
+    {
+        var visited = Set<String>()
+        var result = Set<String>()
+        var queue: [String] = graph[target, default: []]
+        while let curr = queue.popLast() {
+            guard !ignoring.contains(curr) else {
+                continue
+            }
+            result.insert(curr)
+            for dep in graph[curr, default: []] {
+                if !visited.contains(dep) {
+                    visited.insert(dep)
+                    queue.append(dep)
+                }
+            }
+        }
+        return result
     }
 
     func clearCache() {
@@ -200,6 +264,8 @@ final class BazelTargetStoreImpl: BazelTargetStore {
         bazelLabelToParentsMap = [:]
         availableBazelLabels = []
         topLevelLabelToRuleMap = [:]
+        platformsToTopLevelLabelsMap = [:]
         bazelTargetQuerier.clearCache()
+        cachedTargets = nil
     }
 }

@@ -21,6 +21,8 @@ import BuildServerProtocol
 import Foundation
 import LanguageServerProtocol
 
+import struct os.OSAllocatedUnfairLock
+
 private let logger = makeFileLevelBSPLogger()
 
 /// Handles the `textDocument/sourceKitOptions` request.
@@ -51,7 +53,7 @@ final class SKOptionsHandler: InvalidatedTargetObserver {
         _ id: RequestID
     ) throws -> TextDocumentSourceKitOptionsResponse? {
         let taskId = TaskId(id: "getSKOptions-\(id.description)")
-        connection?.startWorkTask(id: taskId, title: "Indexing: Getting compiler arguments")
+        connection?.startWorkTask(id: taskId, title: "sourcekit-bazel-bsp: Fetching compiler arguments...")
         do {
             let result = try handle(request: request)
             connection?.finishTask(id: taskId, status: .ok)
@@ -63,9 +65,14 @@ final class SKOptionsHandler: InvalidatedTargetObserver {
     }
 
     func handle(request: TextDocumentSourceKitOptionsRequest) throws -> TextDocumentSourceKitOptionsResponse? {
-        let targetUri = request.target.uri
-        let (bazelTarget, platform) = try targetStore.platformBuildLabel(forBSPURI: targetUri)
-        let underlyingLibrary = try targetStore.bazelTargetLabel(forBSPURI: targetUri)
+        let (targetUri, bazelTarget, platform, underlyingLibrary) = try targetStore.stateLock.withLockUnchecked {
+            let targetUri = request.target.uri
+            let buildInfo = try targetStore.platformBuildLabelInfo(forBSPURI: targetUri)
+            let bazelTarget = buildInfo.buildTestLabel
+            let platform = buildInfo.parentRuleType
+            let underlyingLibrary = try targetStore.bazelTargetLabel(forBSPURI: targetUri)
+            return (targetUri, bazelTarget, platform, underlyingLibrary)
+        }
 
         logger.info(
             "Fetching SKOptions for \(targetUri.stringValue), target: \(bazelTarget), language: \(request.language)"
@@ -86,16 +93,18 @@ final class SKOptionsHandler: InvalidatedTargetObserver {
         }
         return TextDocumentSourceKitOptionsResponse(
             compilerArguments: args,
-            workingDirectory: initializedConfig.rootUri
+            workingDirectory: initializedConfig.executionRoot
         )
     }
 
     // MARK: - InvalidatedTargetObserver
 
-    func invalidate(targets: Set<AffectedTarget>) throws {
-        // Only clear cache if at least one file was created or deleted
-        if targets.contains(where: { $0.kind == .created || $0.kind == .deleted }) {
-            extractor.clearCache()
+    func invalidate(targets: [InvalidatedTarget]) throws {
+        // Only clear the cache if at least one file was created or deleted.
+        // Otherwise, the compiler args are bound to be the same.
+        guard targets.contains(where: { $0.kind == .created || $0.kind == .deleted }) else {
+            return
         }
+        extractor.clearCache()
     }
 }

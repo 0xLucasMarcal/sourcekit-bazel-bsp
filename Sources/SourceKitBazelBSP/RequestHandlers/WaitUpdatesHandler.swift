@@ -18,19 +18,32 @@
 // under the License.
 
 import BuildServerProtocol
+import Foundation
 import LanguageServerProtocol
 
-/// Represents a target that was affected by a file change.
-struct InvalidatedTarget: Hashable {
-    /// The URI of the build target that was invalidated.
-    let uri: URI
-    /// The URI of the file that triggered the invalidation.
-    let fileUri: URI
-    /// The kind of file change that triggered the invalidation.
-    let kind: FileChangeType
-}
+/// Handles the `waitForBuildSystemUpdates` request.
+///
+/// This just checks if the target store is processing updates.
+final class WaitUpdatesHandler: @unchecked Sendable {
 
-/// Protocol for objects that need to be notified when build targets are invalidated
-protocol InvalidatedTargetObserver: AnyObject {
-    func invalidate(targets: [InvalidatedTarget]) throws
+    private let targetStore: BazelTargetStore
+    private weak var connection: LSPConnection?
+
+    init(
+        targetStore: BazelTargetStore,
+        connection: LSPConnection? = nil
+    ) {
+        self.targetStore = targetStore
+        self.connection = connection
+    }
+
+    func workspaceWaitForBuildSystemUpdates(
+        _ request: WorkspaceWaitForBuildSystemUpdatesRequest,
+        _ id: RequestID
+    ) throws -> VoidResponse {
+        // If we can acquire the lock, then no updates are pending.
+        return targetStore.stateLock.withLockUnchecked {
+            return VoidResponse()
+        }
+    }
 }

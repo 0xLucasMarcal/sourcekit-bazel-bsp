@@ -37,7 +37,7 @@ enum BazelTargetAquerierError: Error, LocalizedError {
 final class BazelTargetAquerier {
 
     private let commandRunner: CommandRunner
-    private var queryCache = [String: Analysis_ActionGraphContainer]()
+    private var queryCache = [String: AqueryResult]()
 
     init(commandRunner: CommandRunner = ShellCommandRunner()) {
         self.commandRunner = commandRunner
@@ -49,7 +49,7 @@ final class BazelTargetAquerier {
         config: InitializedServerConfig,
         mnemonics: Set<String>,
         additionalFlags: [String]
-    ) throws -> Analysis_ActionGraphContainer {
+    ) throws -> AqueryResult {
         guard !mnemonics.isEmpty else {
             throw BazelTargetAquerierError.noMnemonics
         }
@@ -66,16 +66,22 @@ final class BazelTargetAquerier {
             return cached
         }
 
-        // Run the aquery on the special index output base since that's where we will build at.
-        let output: Data = try commandRunner.bazelIndexAction(initializedConfig: config, cmd: cmd)
+        // Run the aquery with the special index flags since that's what we will build with.
+        let output: Data = try commandRunner.bazelIndexAction(
+            baseConfig: config.baseConfig,
+            outputBase: config.aqueryOutputBase,
+            cmd: cmd,
+            rootUri: config.rootUri
+        )
 
         let parsedOutput = try BazelProtobufBindings.parseActionGraph(data: output)
+        let aqueryResult = AqueryResult(results: parsedOutput)
 
         logger.debug("ActionGraphContainer parsed \(parsedOutput.actions.count) actions")
 
-        queryCache[cmd] = parsedOutput
+        queryCache[cmd] = aqueryResult
 
-        return parsedOutput
+        return aqueryResult
     }
 
     func clearCache() {

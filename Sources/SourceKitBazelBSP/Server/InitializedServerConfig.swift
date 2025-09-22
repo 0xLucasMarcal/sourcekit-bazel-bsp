@@ -28,6 +28,8 @@ struct InitializedServerConfig: Equatable {
     let outputPath: String
     let devDir: String
     let devToolchainPath: String
+    let executionRoot: String
+    let sdkRootPaths: [String: String]
 
     var indexDatabasePath: String {
         outputPath + "/_global_index_database"
@@ -35,5 +37,14 @@ struct InitializedServerConfig: Equatable {
 
     var indexStorePath: String {
         outputPath + "/_global_index_store"
+    }
+
+    // We currently use a third output base for aquerying
+    // to prevent extracting compiler args from being blocked by index builds.
+    var aqueryOutputBase: String {
+        guard baseConfig.useSeparateOutputBaseForAquery else {
+            return outputBase
+        }
+        return outputBase + "-aq"
     }
 }

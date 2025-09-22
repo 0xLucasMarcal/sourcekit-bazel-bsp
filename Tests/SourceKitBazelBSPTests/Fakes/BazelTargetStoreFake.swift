@@ -21,13 +21,19 @@ import BuildServerProtocol
 import Foundation
 import LanguageServerProtocol
 
+import struct os.OSAllocatedUnfairLock
+
 @testable import SourceKitBazelBSP
 
 final class BazelTargetStoreFake: BazelTargetStore {
+    let stateLock = OSAllocatedUnfairLock()
     var clearCacheCalled = false
     var fetchTargetsCalled = false
     var fetchTargetsError: Error?
     var mockSrcToBspURIs: [DocumentURI: [DocumentURI]] = [:]
+    var mockPlatformsToTopLevelLabelsMap: [String: [String]] = [:]
+
+    var platformsToTopLevelLabelsMap: [String: [String]] { mockPlatformsToTopLevelLabelsMap }
 
     func fetchTargets() throws -> [BuildTarget] {
         fetchTargetsCalled = true
@@ -52,7 +58,7 @@ final class BazelTargetStoreFake: BazelTargetStore {
         unimplemented()
     }
 
-    func platformBuildLabel(forBSPURI uri: DocumentURI) throws -> (String, TopLevelRuleType) {
+    func platformBuildLabelInfo(forBSPURI uri: URI) throws -> BazelTargetPlatformInfo {
         unimplemented()
     }
 

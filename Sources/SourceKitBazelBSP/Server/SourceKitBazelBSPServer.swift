@@ -38,13 +38,13 @@ package final class SourceKitBazelBSPServer {
         // Everything else will be registered post-init.
         let initHandler = InitializeHandler(baseConfig: baseConfig, connection: connection)
         let shutdownHandler = ShutdownHandler()
-        registry.register(requestHandler: { (request: InitializeBuildRequest, id: RequestID) in
+        registry.register(syncRequestHandler: { (request: InitializeBuildRequest, id: RequestID) in
             let result = try initHandler.initializeBuild(request, id)
             Self.registerPostInitHandlers(registry: registry, initializedConfig: result.1, connection: connection)
             return result.0
         })
         registry.register(notificationHandler: shutdownHandler.onBuildExit)
-        registry.register(requestHandler: shutdownHandler.buildShutdown)
+        registry.register(syncRequestHandler: shutdownHandler.buildShutdown)
         return registry
     }
 
@@ -53,24 +53,22 @@ package final class SourceKitBazelBSPServer {
         initializedConfig: InitializedServerConfig,
         connection: JSONRPCConnection
     ) {
-        // First, deal with the no-op handlers we cannot or do not want to handle directly.
-        registry.register(notificationHandler: { (_: OnBuildInitializedNotification) in
-            // no-op
-        })
-        registry.register(requestHandler: { (_: WorkspaceWaitForBuildSystemUpdatesRequest, _: RequestID) in
-            // FIXME: no-op, no special handling since the code today is not async, but I might be wrong here.
-            VoidResponse()
-        })
+        // build/initialized
+        let didInitializeHandler = DidInitializeHandler(initializedConfig: initializedConfig)
+        registry.register(notificationHandler: didInitializeHandler.onDidInitialize)
 
-        // Then, register the things we are interested in.
         // workspace/buildTargets
         let targetStore = BazelTargetStoreImpl(initializedConfig: initializedConfig)
         let buildTargetsHandler = BuildTargetsHandler(targetStore: targetStore, connection: connection)
-        registry.register(requestHandler: buildTargetsHandler.workspaceBuildTargets)
+        registry.register(syncRequestHandler: buildTargetsHandler.workspaceBuildTargets)
+
+        // workspace/waitForBuildSystemUpdates
+        let waitUpdatesHandler = WaitUpdatesHandler(targetStore: targetStore, connection: connection)
+        registry.register(syncRequestHandler: waitUpdatesHandler.workspaceWaitForBuildSystemUpdates)
 
         // buildTarget/sources
         let targetSourcesHandler = TargetSourcesHandler(initializedConfig: initializedConfig, targetStore: targetStore)
-        registry.register(requestHandler: targetSourcesHandler.buildTargetSources)
+        registry.register(syncRequestHandler: targetSourcesHandler.buildTargetSources)
 
         // textDocument/sourceKitOptions
         let skOptionsHandler = SKOptionsHandler(
@@ -78,7 +76,7 @@ package final class SourceKitBazelBSPServer {
             targetStore: targetStore,
             connection: connection
         )
-        registry.register(requestHandler: skOptionsHandler.textDocumentSourceKitOptions)
+        registry.register(syncRequestHandler: skOptionsHandler.textDocumentSourceKitOptions)
 
         // buildTarget/prepare
         let prepareHandler = PrepareHandler(
@@ -91,7 +89,7 @@ package final class SourceKitBazelBSPServer {
         // OnWatchedFilesDidChangeNotification
         let watchedFileChangeHandler = WatchedFileChangeHandler(
             targetStore: targetStore,
-            observers: [prepareHandler, skOptionsHandler],
+            observers: [skOptionsHandler],
             connection: connection
         )
         registry.register(notificationHandler: watchedFileChangeHandler.onWatchedFilesDidChange)
@@ -115,7 +113,10 @@ package final class SourceKitBazelBSPServer {
             outFD: outputHandle
         )
         let handler = Self.makeBSPMessageHandler(baseConfig: baseConfig, connection: connection)
-        self.init(connection: connection, handler: handler)
+        self.init(
+            connection: connection,
+            handler: AsyncMessageHandler(wrapping: handler)
+        )
     }
 
     package init(connection: LSPConnection, handler: MessageHandler) {

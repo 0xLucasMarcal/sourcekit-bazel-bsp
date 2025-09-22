@@ -37,7 +37,8 @@ struct PrepareHandlerTests {
             bazelWrapper: "bazel",
             targets: ["//HelloWorld"],
             indexFlags: ["--config=index"],
-            buildTestSuffix: "_skbsp",
+            buildTestSuffix: "_(PLAT)_skbsp",
+            buildTestPlatformPlaceholder: "(PLAT)",
             filesToWatch: nil
         )
 
@@ -47,7 +48,9 @@ struct PrepareHandlerTests {
             outputBase: "/tmp/output_base",
             outputPath: "/tmp/output_path",
             devDir: "/Applications/Xcode.app/Contents/Developer",
-            devToolchainPath: "/a/b/XcodeDefault.xctoolchain/"
+            devToolchainPath: "/a/b/XcodeDefault.xctoolchain/",
+            executionRoot: "/tmp/output_path/execoot/_main",
+            sdkRootPaths: ["iphonesimulator": "bar"]
         )
 
         let expectedCommand = "bazel --output_base=/tmp/output_base build //HelloWorld --config=index"
@@ -60,7 +63,13 @@ struct PrepareHandlerTests {
             connection: connection
         )
 
-        try handler.build(bazelLabels: baseConfig.targets)
+        let semaphore = DispatchSemaphore(value: 0)
+        try handler.build(bazelLabels: baseConfig.targets, id: RequestID.number(1)) { error in
+            #expect(error == nil)
+            semaphore.signal()
+        }
+
+        #expect(semaphore.wait(timeout: .now() + 1) == .success)
 
         let ranCommands = commandRunner.commands
         #expect(ranCommands.count == 1)
@@ -76,7 +85,8 @@ struct PrepareHandlerTests {
             bazelWrapper: "bazel",
             targets: ["//HelloWorld", "//HelloWorld2"],
             indexFlags: ["--config=index"],
-            buildTestSuffix: "_skbsp",
+            buildTestSuffix: "_(PLAT)_skbsp",
+            buildTestPlatformPlaceholder: "(PLAT)",
             filesToWatch: nil
         )
 
@@ -86,7 +96,9 @@ struct PrepareHandlerTests {
             outputBase: "/tmp/output_base",
             outputPath: "/tmp/output_path",
             devDir: "/Applications/Xcode.app/Contents/Developer",
-            devToolchainPath: "/a/b/XcodeDefault.xctoolchain/"
+            devToolchainPath: "/a/b/XcodeDefault.xctoolchain/",
+            executionRoot: "/tmp/output_path/execroot/_main",
+            sdkRootPaths: ["iphonesimulator": "bar"]
         )
 
         let expectedCommand = "bazel --output_base=/tmp/output_base build //HelloWorld //HelloWorld2 --config=index"
@@ -99,7 +111,13 @@ struct PrepareHandlerTests {
             connection: connection
         )
 
-        try handler.build(bazelLabels: baseConfig.targets)
+        let semaphore = DispatchSemaphore(value: 0)
+        try handler.build(bazelLabels: baseConfig.targets, id: RequestID.number(1)) { error in
+            #expect(error == nil)
+            semaphore.signal()
+        }
+
+        #expect(semaphore.wait(timeout: .now() + 1) == .success)
 
         let ranCommands = commandRunner.commands
         #expect(ranCommands.count == 1)
